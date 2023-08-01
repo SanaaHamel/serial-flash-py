@@ -10,6 +10,12 @@ classifiers = [
   "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
   "Operating System :: OS Independent",
 ]
+dependencies = [
+  "lief>=0.13.2",
+  "tqdm>=4.65.0",
+  "typed-argparse>=0.2.11",
+  "typing_extensions",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/sanaahamel/serial-flash-py"
