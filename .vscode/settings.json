@@ -1,0 +1,12 @@
+{
+  "editor.formatOnSave": true,
+  "cSpell.words": [
+    "picowota",
+    "serialflash",
+    "tqdm"
+  ],
+  "files.exclude": {
+    "**/__pycache__": true
+  },
+  "python.analysis.typeCheckingMode": "strict"
+}

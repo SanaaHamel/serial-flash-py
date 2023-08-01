@@ -1,0 +1,4 @@
+lief>=0.13.2<1
+tqdm>=4.65.0
+typed-argparse>=0.2.11<1
+typing_extensions
