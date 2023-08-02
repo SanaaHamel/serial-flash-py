@@ -137,13 +137,16 @@ def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
         )
 
     def tqdm_chunks(desc: str, step: int, padding: int = 0):
-        for offset in tqdm(
-            range(0, len(img.data) + padding, step),
+        with tqdm(
             desc=desc,
-            unit="Kb",
-            unit_scale=step / 1024,
-        ):
-            yield (img.addr + offset, offset, min(len(img.data), offset + step))
+            total=len(img.data) + padding,
+            unit="b",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as t:
+            for offset in range(0, t.total, step):
+                t.update(min(step, t.total - t.n))
+                yield (img.addr + offset, offset, min(len(img.data), offset + step))
 
     for addr, _, _ in tqdm_chunks("erasing", info.erase_size, pad_len(info.erase_size)):
         _cmd_erase(comm, addr, info.erase_size)
