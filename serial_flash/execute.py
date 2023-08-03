@@ -1,9 +1,11 @@
+import math
+import zlib
 from dataclasses import dataclass
 from typing import Callable, Optional
-from typing_extensions import Buffer
-import zlib
 
 from tqdm import tqdm
+from typing_extensions import Buffer
+
 from serial_flash.image import Image, in_range, mk_range
 from serial_flash.transport import Transport
 
@@ -28,11 +30,11 @@ class Cmd:
 
 class _Read:
     def __init__(
-        self, comm: Transport, sz: int = 0, expected_response: bytes = b"OKOK"
+        self, comm: Transport, sz: int = 0, expected_response: Optional[bytes] = b"OKOK"
     ):
-        response = comm.recv(4)
-        if response != expected_response:
-            raise RuntimeError(f"unexpected response: {response}")
+        self.response = comm.recv(4)
+        if expected_response is not None and self.response != expected_response:
+            raise RuntimeError(f"unexpected response: {self.response}")
 
         self.remaining = comm.recv(sz)
 
@@ -67,9 +69,9 @@ def _align(addr: int, alignment: int):
     return (addr + alignment - 1) & ~(alignment - 1)
 
 
-def _cmd_sync(comm: Transport, expected: bytes):
+def _cmd_sync(comm: Transport):
     comm.send(Cmd(b"SYNC").finish())
-    _Read(comm, 0, expected)
+    return _Read(comm, 0, None).response
 
 
 def _cmd_info(comm: Transport):
@@ -93,6 +95,21 @@ def _cmd_write(comm: Transport, addr: int, data: Buffer):
         raise RuntimeError(f"crc mismatch: got=0x{crc:08x} expected=0x{_crc(data):08x}")
 
 
+def _cmd_erase_write(
+    comm: Transport, addr: int, data: Buffer, *, detailed: bool = False
+):
+    assert 0 <= addr
+    comm.send(
+        Cmd(b"ERWR").u4(addr).u4(len(data)).u4(1 if detailed else 0).data(data).finish()
+    )
+    read = _Read(comm, 4 * 2)
+    crc = read.u4()
+    changed = read.u4()
+    if crc != _crc(data):
+        raise RuntimeError(f"crc mismatch: got=0x{crc:08x} expected=0x{_crc(data):08x}")
+    return changed
+
+
 def _cmd_seal(comm: Transport, img: Image):
     assert 0 <= img.addr
     comm.send(Cmd(b"SEAL").u4(img.addr).u4(len(img.data)).u4(_crc(img.data)).finish())
@@ -113,7 +130,12 @@ def _cmd_crc(comm: Transport, addr: int, n: int):  # type: ignore unused
 
 def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
     print("requesting device info...")
-    _cmd_sync(comm, b"WOTA")
+
+    sync_response = _cmd_sync(comm)
+    use_classic_api = sync_response == b"WOTA"
+    if sync_response not in {b"WOTA", b"WoTa"}:
+        raise RuntimeError(f"unrecognised response code: {sync_response}")
+
     info = _cmd_info(comm)
     print(info)
 
@@ -126,6 +148,7 @@ def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
         return _align(len(img.data), align) - len(img.data)
 
     img.data += bytearray(pad_len(info.write_size))
+    print(f"img size: {len(img.data)}")
 
     flash_span = mk_range(info.flash_addr, info.flash_size)
     img_span = mk_range(img.addr, len(img.data))
@@ -137,6 +160,8 @@ def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
         )
 
     def tqdm_chunks(desc: str, step: int, padding: int = 0):
+        assert 0 <= step
+        assert 0 <= padding
         with tqdm(
             desc=desc,
             total=len(img.data) + padding,
@@ -148,11 +173,35 @@ def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
                 t.update(min(step, t.total - t.n))
                 yield (img.addr + offset, offset, min(len(img.data), offset + step))
 
-    for addr, _, _ in tqdm_chunks("erasing", info.erase_size, pad_len(info.erase_size)):
-        _cmd_erase(comm, addr, info.erase_size)
+    if use_classic_api:
+        for addr, _, _ in tqdm_chunks(
+            "erasing", info.erase_size, pad_len(info.erase_size)
+        ):
+            _cmd_erase(comm, addr, info.erase_size)
 
-    for addr, bgn, end in tqdm_chunks("writing", info.max_data_len):
-        _cmd_write(comm, addr, img.data[bgn:end])
+        info.max_data_len = 1024
+        for addr, bgn, end in tqdm_chunks("writing", info.max_data_len):
+            _cmd_write(comm, addr, img.data[bgn:end])
+    else:
+        # add extra padding for flash erase
+        img.data += bytearray(pad_len(info.erase_size))
+
+        # must be aligned to maximum of write and erase alignments
+        chunk_size = info.max_data_len - info.max_data_len % max(
+            info.write_size, info.erase_size
+        )
+        print(f"chunk size: 0x{chunk_size:x}")
+
+        detailed = True
+        change_total = math.ceil(len(img.data) / (1 if detailed else chunk_size))
+        change = 0
+
+        for addr, bgn, end in tqdm_chunks("updating", chunk_size):
+            change += _cmd_erase_write(comm, addr, img.data[bgn:end], detailed=detailed)
+
+        print(
+            f"update modified {change} of {change_total} {'bytes' if detailed else 'chunks'} ({change/change_total*100:.2f}%)"
+        )
 
     print("finalising...")
     _cmd_seal(comm, img)
