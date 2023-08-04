@@ -1,7 +1,7 @@
 import math
 import zlib
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 from tqdm import tqdm
 from typing_extensions import Buffer
@@ -52,6 +52,7 @@ class _Read:
 
 @dataclass
 class Info:
+    uf2_family: Optional[int]
     flash_addr: int
     flash_size: int
     erase_size: int
@@ -77,7 +78,13 @@ def _cmd_sync(comm: Transport):
 def _cmd_info(comm: Transport):
     comm.send(Cmd(b"INFO").finish())
     read = _Read(comm, 4 * 5)
-    return Info(read.u4(), read.u4(), read.u4(), read.u4(), read.u4())
+    return Info(None, read.u4(), read.u4(), read.u4(), read.u4(), read.u4())
+
+
+def _cmd_info_boot(comm: Transport):
+    comm.send(Cmd(b"BTIF").finish())
+    read = _Read(comm, 4 * 6)
+    return Info(read.u4(), read.u4(), read.u4(), read.u4(), read.u4(), read.u4())
 
 
 def _cmd_erase(comm: Transport, addr: int, size: int):
@@ -95,12 +102,12 @@ def _cmd_write(comm: Transport, addr: int, data: Buffer):
         raise RuntimeError(f"crc mismatch: got=0x{crc:08x} expected=0x{_crc(data):08x}")
 
 
-def _cmd_erase_write(
-    comm: Transport, addr: int, data: Buffer, *, detailed: bool = False
+def _cmd_erase_write_ex(
+    code: bytes, comm: Transport, addr: int, data: Buffer, *, detailed: bool = False
 ):
     assert 0 <= addr
     comm.send(
-        Cmd(b"ERWR").u4(addr).u4(len(data)).u4(1 if detailed else 0).data(data).finish()
+        Cmd(code).u4(addr).u4(len(data)).u4(1 if detailed else 0).data(data).finish()
     )
     read = _Read(comm, 4 * 2)
     crc = read.u4()
@@ -110,13 +117,30 @@ def _cmd_erase_write(
     return changed
 
 
+def _cmd_erase_write(
+    comm: Transport, addr: int, data: Buffer, *, detailed: bool = False
+):
+    return _cmd_erase_write_ex(b"ERWR", comm, addr, data, detailed=detailed)
+
+
+def _cmd_erase_write_boot(
+    comm: Transport, addr: int, data: Buffer, *, detailed: bool = False
+):
+    return _cmd_erase_write_ex(b"BTEW", comm, addr, data, detailed=detailed)
+
+
 def _cmd_seal(comm: Transport, img: Image):
     assert 0 <= img.addr
     comm.send(Cmd(b"SEAL").u4(img.addr).u4(len(img.data)).u4(_crc(img.data)).finish())
     _Read(comm)
 
 
-def _cmd_reboot(comm: Transport, img: Image):
+def _cmd_reboot(comm: Transport, *, to_bootloader: bool = False):
+    comm.send(Cmd(b"BOOT").u4(1 if to_bootloader else 0).finish())
+    _Read(comm)
+
+
+def _cmd_launch(comm: Transport, img: Image):  # type: ignore unused
     comm.send(Cmd(b"GOGO").u4(img.addr).finish())
     _Read(comm)
 
@@ -128,21 +152,31 @@ def _cmd_crc(comm: Transport, addr: int, n: int):  # type: ignore unused
     return _Read(comm, 4).u4()
 
 
-def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
+def _execute(
+    comm: Transport,
+    load_img: Callable[[Info], Optional[Image]],
+    *,
+    classic_api: bool = False,
+    update_bootloader: bool = False,
+    family_override: Optional[int] = None,
+) -> Optional[Tuple[Image, Optional[int]]]:
+    assert not (
+        update_bootloader and classic_api
+    ), "can't update bootloader w/ classic API"
+
     print("requesting device info...")
+    if update_bootloader:
+        info = _cmd_info_boot(comm)
+    else:
+        info = _cmd_info(comm)
 
-    sync_response = _cmd_sync(comm)
-    use_classic_api = sync_response == b"WOTA"
-    if sync_response not in {b"WOTA", b"WoTa"}:
-        raise RuntimeError(f"unrecognised response code: {sync_response}")
-
-    info = _cmd_info(comm)
-    print(info)
+    if family_override is not None:
+        info.uf2_family = family_override
 
     img = load_img(info)
     if img is None:
         # failed to load img for whatever reason, callback is responsible for logging
-        return
+        return None
 
     def pad_len(align: int):
         return _align(len(img.data), align) - len(img.data)
@@ -173,7 +207,7 @@ def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
                 t.update(min(step, t.total - t.n))
                 yield (img.addr + offset, offset, min(len(img.data), offset + step))
 
-    if use_classic_api:
+    if classic_api:
         for addr, _, _ in tqdm_chunks(
             "erasing", info.erase_size, pad_len(info.erase_size)
         ):
@@ -195,16 +229,42 @@ def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
         detailed = True
         change_total = math.ceil(len(img.data) / (1 if detailed else chunk_size))
         change = 0
-
+        cmd_update = _cmd_erase_write_boot if update_bootloader else _cmd_erase_write
         for addr, bgn, end in tqdm_chunks("updating", chunk_size):
-            change += _cmd_erase_write(comm, addr, img.data[bgn:end], detailed=detailed)
+            change += cmd_update(comm, addr, img.data[bgn:end], detailed=detailed)
 
         print(
             f"update modified {change} of {change_total} {'bytes' if detailed else 'chunks'} ({change/change_total*100:.2f}%)"
         )
 
-    print("finalising...")
-    _cmd_seal(comm, img)
+    return img, info.uf2_family
 
-    print("launching...")
-    _cmd_reboot(comm, img)
+
+def execute(comm: Transport, load_img: Callable[[Info], Optional[Image]]):
+    print("sync w/ device...")
+
+    sync_response = _cmd_sync(comm)
+    classic_api = sync_response == b"WOTA"
+    if sync_response not in {b"WOTA", b"WoTa"}:
+        raise RuntimeError(f"unrecognised response code: {sync_response}")
+
+    family: Optional[int] = None  # only known by fetching bootloader info
+    if not classic_api:
+        print("trying to update bootloader...")
+        result = _execute(comm, load_img, update_bootloader=True)
+        if result is None:
+            print("no bootloader found in image.")
+        else:
+            _, family = result
+
+    print("updating main image...")
+    result = _execute(comm, load_img, classic_api=classic_api, family_override=family)
+    if result is not None:
+        print("finalising...")
+        img, _ = result
+        _cmd_seal(comm, img)
+    else:
+        print("no main image found? odd.")
+
+    print("rebooting...")
+    _cmd_reboot(comm)
