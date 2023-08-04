@@ -1,6 +1,14 @@
+import logging
 from typing import Any, Generator, Optional, Tuple
 
-import lief
+try:
+    import lief
+
+    LIEF_AVAILABLE = True
+except ImportError:
+    logging.exception("`lief` is not available")
+    LIEF_AVAILABLE = False
+
 
 from serial_flash.execute import Info
 from serial_flash.image import *
@@ -10,11 +18,15 @@ __all__ = [
 ]
 
 
-def _show(s: lief.Section):  # type: ignore unused
+def _show(s: "lief.Section"):  # type: ignore unused
     return f"{s.name}\tvaddr=[0x{s.virtual_address:08x}, 0x{s.virtual_address+s.size:08x}] sz=0x{s.size:08x}"
 
 
 def elf(info: Info, filename: str) -> Optional[Image]:
+    if not LIEF_AVAILABLE:
+        logging.error("`lief` is not available, cannot handle ELF files")
+        return None
+
     bin = lief.parse(filename).concrete
     if not isinstance(bin, lief.ELF.Binary):
         return None

@@ -35,7 +35,15 @@ from serial_flash.execute import Info
 
 
 def guess(info: Info, filename: str) -> Optional[Image]:
-    from serial_flash.image.elf import elf
+    from serial_flash.image.uf2 import uf2
 
     if filename.endswith(".elf"):
+        # has dependency on `lief`, load lazily
+        from serial_flash.image.elf import elf
+
         return elf(info, filename)
+
+    if filename.endswith(".uf2"):
+        return uf2(info, filename)
+
+    return None

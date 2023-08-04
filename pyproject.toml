@@ -11,7 +11,7 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 dependencies = [
-  "lief>=0.13.2",
+  # "lief>=0.13.2", # optional
   "tqdm>=4.65.0",
   "typed-argparse>=0.2.11",
   "typing_extensions",
