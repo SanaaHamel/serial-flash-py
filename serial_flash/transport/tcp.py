@@ -1,52 +1,16 @@
 import socket
-from typing import List
 
 import typed_argparse as tap
-from typing_extensions import Buffer, override
+from typing_extensions import override
 
-from serial_flash.transport import *
-
-
-_RECV_CHUNK = 2048
+from serial_flash.transport import SocketTransport, TransportArgs
 
 
-class TCP(Transport):
+class TCP(SocketTransport):
     def __init__(self, addr: str, port: int):
-        super().__init__()
-
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # now connect to the web server on port 80 - the normal http port
-        self._socket.connect((addr, port))
-
-    @override
-    def send(self, data: Buffer) -> None:
-        total = 0
-        while total < len(data):
-            sent = self._socket.send(data[total:])
-            if sent == 0:
-                raise RuntimeError("socket connection broken")
-
-            total = total + sent
-
-    @override
-    def recv(self, n: int):
-        chunks: List[bytes] = []
-        total = 0
-
-        while total < n:
-            chunk = self._socket.recv(min(n - total, _RECV_CHUNK))
-            if not chunk:
-                raise RuntimeError("socket connection broken")
-
-            chunks.append(chunk)
-            total += len(chunk)
-
-        return b"".join(chunks)
-
-    @override
-    def close(self) -> None:
-        self._socket.shutdown(socket.SHUT_RDWR)
-        self._socket.close()
+        sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sk.connect((addr, port))
+        super().__init__(sk)
 
 
 class TcpArgs(TransportArgs):
