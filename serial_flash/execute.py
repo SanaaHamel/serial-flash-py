@@ -94,6 +94,13 @@ def _cmd_erase(comm: Transport, addr: int, size: int):
     _Read(comm)
 
 
+def _cmd_erase_boot(comm: Transport, addr: int, size: int):
+    assert 0 <= addr
+    assert 0 <= size
+    comm.send(Cmd(b"BTER").u4(addr).u4(size).finish())
+    _Read(comm)
+
+
 def _cmd_write(comm: Transport, addr: int, data: Buffer):
     assert 0 <= addr
     comm.send(Cmd(b"WRIT").u4(addr).u4(len(data)).data(data).finish())
@@ -208,15 +215,26 @@ def _execute(
                 yield (img.addr + offset, offset, min(len(img.data), offset + step))
 
     if classic_api:
-        for addr, _, _ in tqdm_chunks(
-            "erasing", info.erase_size, pad_len(info.erase_size)
-        ):
-            _cmd_erase(comm, addr, info.erase_size)
+        fine_grain_erase = False
+        if fine_grain_erase:
+            for addr, _, _ in tqdm_chunks(
+                "erasing", info.erase_size, pad_len(info.erase_size)
+            ):
+                _cmd_erase(comm, addr, info.erase_size)
+        else:
+            # erase the whole thing. let the controller wear level as best it can.
+            print(
+                f"erasing [0x{info.flash_addr:08x}, 0x{info.flash_addr+info.flash_size:08x}]..."
+            )
+            _cmd_erase(comm, info.flash_addr, info.flash_size)
 
         info.max_data_len = 1024
         for addr, bgn, end in tqdm_chunks("writing", info.max_data_len):
             _cmd_write(comm, addr, img.data[bgn:end])
     else:
+        cmd_erase = _cmd_erase_boot if update_bootloader else _cmd_erase
+        cmd_update = _cmd_erase_write_boot if update_bootloader else _cmd_erase_write
+
         # add extra padding for flash erase
         img.data += bytearray(pad_len(info.erase_size))
 
@@ -229,10 +247,15 @@ def _execute(
             0 < chunk_size
         ), f"controller misconfigured? unable to satisfy alignment requirements\n{info}"
 
+        assert pad_len(info.erase_size) == 0, "no additional padding should be need"
+        img_end = img.addr + len(img.data)
+        erasable_len = info.flash_addr + info.flash_size - img_end
+        print(f"erasing tail [0x{img_end:08x}, 0x{img_end+erasable_len:08x}]...")
+        cmd_erase(comm, img_end, erasable_len)
+
         detailed = True
         change_total = math.ceil(len(img.data) / (1 if detailed else chunk_size))
         change = 0
-        cmd_update = _cmd_erase_write_boot if update_bootloader else _cmd_erase_write
         for addr, bgn, end in tqdm_chunks("updating", chunk_size):
             change += cmd_update(comm, addr, img.data[bgn:end], detailed=detailed)
 
