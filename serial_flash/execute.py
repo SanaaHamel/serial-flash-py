@@ -225,6 +225,9 @@ def _execute(
             info.write_size, info.erase_size
         )
         print(f"chunk size: 0x{chunk_size:x}")
+        assert (
+            0 < chunk_size
+        ), f"controller misconfigured? unable to satisfy alignment requirements\n{info}"
 
         detailed = True
         change_total = math.ceil(len(img.data) / (1 if detailed else chunk_size))
