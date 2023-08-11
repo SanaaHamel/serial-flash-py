@@ -1,7 +1,7 @@
 import logging
 import struct
 import enum
-from typing import Any, Generator, Optional, Tuple
+from typing import List, Optional
 
 from serial_flash.execute import Info
 from serial_flash.image import *
@@ -65,6 +65,25 @@ def _read_uf2(info: Info, filename: str):
     return blocks
 
 
+def _contiguous_spans(xs: List[UF2Block]):  # type: ignore not used
+    bgn: Optional[int] = None
+    end: Optional[int] = None
+    for b in xs:
+        if bgn is None:
+            bgn = b.address
+            end = b.address
+        if end == b.address:
+            end = b.address + len(b.data)
+            continue
+
+        yield (bgn, end)
+        bgn = b.address
+        end = b.address + len(b.data)
+
+    if end is not None:
+        yield (bgn, end)
+
+
 def uf2(info: Info, filename: str) -> Optional[Image]:
     try:
         blocks = _read_uf2(info, filename)
@@ -84,6 +103,6 @@ def uf2(info: Info, filename: str) -> Optional[Image]:
     hi = max(b.address + len(b.data) for b in blocks)
     data = bytearray(hi - lo)
     for b in blocks:
-        data[b.address - lo : b.address - lo + len(data)] = b.data
+        data[b.address - lo : b.address - lo + len(b.data)] = b.data
 
     return Image(lo, data)
