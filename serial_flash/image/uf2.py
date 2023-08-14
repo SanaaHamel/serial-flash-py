@@ -33,22 +33,29 @@ class UF2Block:
         ) = struct.unpack('<8I', block[0:32])
         assert magic0 == 0x0A324655, "bad magic #0"
         assert magic1 == 0x9E5D5157, "bad magic #1"
-        assert len <= 476, "block data len must be <= 476"
-        assert self.seq_id < self.seq_total, "seq-id must be < seq-total"
+        assert 0 <= len <= 476, "block data len must be <= 476"
+        assert 0 <= self.seq_id < self.seq_total, "seq-id must be < seq-total"
         self.data = block[32 : 32 + len]
         assert struct.unpack('<I', block[508:])[0] == 0x0AB16F30, "bad magic #2"
 
 
-def _read_uf2(info: Info, filename: str):
+def _read_uf2(info: Info, filename: str, sort_by_seq_id: bool = False):
     with open(filename, mode="rb") as f:
         data = f.read()
         blocks = [UF2Block(data[o : o + 512]) for o in range(0, len(data), 512)]
-        blocks.sort(key=lambda x: x.seq_id)
+        # Tiny MCUs aren't expected to have the RAM to reorder blocks by seq-id.
+        # If the UF2 has them out of order then it is quite likely corrupt.
+        if sort_by_seq_id:
+            blocks.sort(key=lambda x: x.seq_id)
 
     assert all(
         blocks[0].seq_total == b.seq_total for b in blocks
     ), "all blocks should have same `seq_total`"
     assert len({b.seq_id for b in blocks}) == len(blocks), "duplicated block IDs"
+    # no-duplicate-IDs \/ all-IDs-in-range <=> all-IDs-in-seq-are-present
+    assert all(
+        a.seq_id + 1 == b.seq_id for a, b in zip(blocks[:-1], blocks[1:])
+    ), "block IDs out of order"
 
     blocks = [b for b in blocks if not (b.flags & Flags.NOT_MAIN_FLASH.value)]
     assert not any(
