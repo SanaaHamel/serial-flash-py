@@ -247,12 +247,6 @@ def _execute(
             0 < chunk_size
         ), f"controller misconfigured? unable to satisfy alignment requirements\n{info}"
 
-        assert pad_len(info.erase_size) == 0, "no additional padding should be need"
-        img_end = img.addr + len(img.data)
-        erasable_len = info.flash_addr + info.flash_size - img_end
-        print(f"erasing tail [0x{img_end:08x}, 0x{img_end+erasable_len:08x}]...")
-        cmd_erase(comm, img_end, erasable_len)
-
         detailed = True
         change_total = math.ceil(len(img.data) / (1 if detailed else chunk_size))
         change = 0
