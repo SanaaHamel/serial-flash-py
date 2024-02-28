@@ -232,7 +232,6 @@ def _execute(
         for addr, bgn, end in tqdm_chunks("writing", info.max_data_len):
             _cmd_write(comm, addr, img.data[bgn:end])
     else:
-        cmd_erase = _cmd_erase_boot if update_bootloader else _cmd_erase
         cmd_update = _cmd_erase_write_boot if update_bootloader else _cmd_erase_write
 
         # add extra padding for flash erase
